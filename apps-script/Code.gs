@@ -27,6 +27,12 @@ function doPost(e) {
       if (!body.read_key || body.read_key !== PROPS.getProperty('READ_KEY')) return out_({ ok: false, error: 'forbidden' });
       return out_(analytics_(body.days || 30));
     }
+    // панель: профиль Threads и поиск по ключевым словам (только чтение)
+    if (body.action === 'threads_me' || body.action === 'threads_search') {
+      const ok = (body.read_key && body.read_key === PROPS.getProperty('READ_KEY')) || (body.key && body.key === PROPS.getProperty('SECRET'));
+      if (!ok) return out_({ ok: false, error: 'forbidden' });
+      return out_(body.action === 'threads_me' ? threadsMe_() : threadsSearch_(body.q, body.search_type, body.limit));
+    }
     if (!body.key || body.key !== PROPS.getProperty('SECRET')) return out_({ ok: false, error: 'forbidden' });
     if (body.action === 'ping') return out_(ping_(body.account));
     if (body.action === 'story') return out_(publishStory_(body.account, body.image_b64, body.name || 'story', body.meta || {}));
@@ -238,6 +244,26 @@ function threadsApi_(method, path, token, payload) {
   const data = JSON.parse(res.getContentText() || '{}');
   if (res.getResponseCode() >= 400 || data.error) throw new Error('Threads API ' + res.getResponseCode() + ': ' + (data.error ? data.error.message : res.getContentText()));
   return data;
+}
+
+/* ===================== Threads: профиль и поиск трендов ===================== */
+
+function threadsMe_() {
+  const token = PROPS.getProperty('TOKEN_THREADS');
+  const me = threadsApi_('get', '/me?fields=id,username,name,threads_profile_picture_url', token);
+  return { ok: true, profile: me };
+}
+
+/** Поиск публичных постов Threads по ключевому слову (threads_keyword_search). search_type: TOP | RECENT */
+function threadsSearch_(q, searchType, limit) {
+  q = String(q || '').trim().slice(0, 100);
+  if (!q) throw new Error('empty query');
+  const token = PROPS.getProperty('TOKEN_THREADS');
+  const st = searchType === 'RECENT' ? 'RECENT' : 'TOP';
+  const n = Math.min(50, Math.max(1, Number(limit) || 25));
+  const fields = 'id,text,media_type,permalink,timestamp,username,has_replies,is_quote_post,is_reply';
+  const r = threadsApi_('get', '/keyword_search?q=' + encodeURIComponent(q) + '&search_type=' + st + '&limit=' + n + '&fields=' + fields, token);
+  return { ok: true, q: q, search_type: st, posts: r.data || [] };
 }
 
 /* ===================== Сбор статистики ===================== */

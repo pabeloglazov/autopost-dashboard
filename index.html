@@ -41,6 +41,13 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .mut{color:var(--mut)}
 .insight{padding:10px 12px;border-left:3px solid var(--green);background:#141a16;border-radius:8px;margin:8px 0;font-size:14px}
 canvas{max-height:280px}
+.tprof{display:flex;align-items:center;gap:12px;font-size:15px}
+.tprof img{width:44px;height:44px;border-radius:50%}
+.chip{background:#1d1d22;border:1px solid var(--line);color:#ddd;border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+.tpost{border-top:1px solid var(--line);padding:12px 0}
+.tpost .who{font-size:13px;color:var(--mut);margin-bottom:4px}
+.tpost .t{white-space:pre-wrap;font-size:14px;line-height:1.45}
+.tpost a{color:#8ab4ff;font-size:13px}
 .filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:14px;position:sticky;top:84px;z-index:4}
 .filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut);min-width:170px;flex:1}
 .filters select{width:100%}
@@ -118,6 +125,19 @@ canvas{max-height:280px}
     <input id="q" placeholder="Поиск по тексту" style="flex:1;min-width:200px">
   </div>
   <div class="card scroll"><table id="hist"></table></div>
+
+  <h2 id="trends">Тренды Threads · Threads trend research</h2>
+  <div class="card">
+    <div id="tprof" class="tprof mut">Профиль Threads загружается…</div>
+    <p class="mut" style="font-size:13px;margin:8px 0 12px">Поиск публичных постов по ключевым словам, чтобы понять, какие темы сейчас обсуждают. По ним пишутся свои, оригинальные посты. / Search public Threads posts by keyword to see which topics people discuss now; we then write our own original posts.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="tq" placeholder="Ключевое слово / keyword, напр. грин карта" style="flex:1;min-width:220px">
+      <select id="tst"><option value="TOP">Популярные / Top</option><option value="RECENT">Свежие / Recent</option></select>
+      <button id="tgo">Искать / Search</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px" id="tchips"></div>
+    <div id="tres" style="margin-top:12px"></div>
+  </div>
 
   <h2>Очередь Threads</h2>
   <div class="card scroll"><table id="queue"></table></div>
@@ -261,6 +281,29 @@ $('#save').onclick=()=>{ store.set('readKey',$('#key').value.trim()); $('#err').
 $('#key').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#save').click(); });
 $('#reload').onclick=load; $('#days').onchange=load;
 $('#q').addEventListener('input',renderHist);
+
+// ===== Тренды Threads (threads_basic + threads_keyword_search) =====
+async function api(body){
+  const r = await fetch(ENDPOINT,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({...body,read_key:store.get('readKey')})});
+  return r.json();
+}
+let profLoaded=false;
+async function loadProfile(){
+  if(profLoaded) return; profLoaded=true;
+  try{ const j=await api({action:'threads_me'}); if(!j.ok) throw new Error(j.error);
+    const p=j.profile; $('#tprof').innerHTML=`${p.threads_profile_picture_url?`<img src="${esc(p.threads_profile_picture_url)}" alt="">`:''}<div><b>@${esc(p.username)}</b><div class="mut" style="font-size:12px">${esc(p.name||'')} · Threads подключён / connected</div></div>`;
+  }catch(e){ $('#tprof').textContent='Профиль Threads недоступен: '+e.message; profLoaded=false; }
+}
+async function tsearch(q){
+  q=(q||$('#tq').value).trim(); if(!q) return; $('#tq').value=q;
+  $('#tres').innerHTML='<p class="mut">Ищу… / Searching…</p>';
+  try{ const j=await api({action:'threads_search',q,search_type:$('#tst').value,limit:25}); if(!j.ok) throw new Error(j.error);
+    $('#tres').innerHTML = `<div class="mut" style="font-size:13px;margin-bottom:4px">Найдено / Found: ${j.posts.length}</div>` + (j.posts.length? j.posts.map(p=>`<div class="tpost"><div class="who">@${esc(p.username)} · ${fmtDate(p.timestamp)}${p.has_replies?' · есть ответы / has replies':''}</div><div class="t">${esc(p.text||'')}</div>${p.permalink?`<a href="${esc(p.permalink)}" target="_blank" rel="noopener">Открыть в Threads / Open in Threads</a>`:''}</div>`).join('') : '<p class="mut">Ничего не найдено / No results</p>');
+  }catch(e){ $('#tres').innerHTML='<p style="color:#ff8a8a">Ошибка: '+esc(e.message)+'</p>'; }
+}
+['грин карта','иммиграция США','ICE','ДТП','страховка авто','Сакраменто'].forEach(w=>{ const b=document.createElement('button'); b.className='chip'; b.textContent=w; b.onclick=()=>tsearch(w); $('#tchips').appendChild(b); });
+$('#tgo').onclick=()=>tsearch(); $('#tq').addEventListener('keydown',e=>{ if(e.key==='Enter') tsearch(); });
+const _render1 = render; render = function(){ _render1(); loadProfile(); };
 const _gt0 = restoreFilters();
 ['#gp','#gd','#gt'].forEach(s=>$(s).addEventListener('change',()=>{ if(s!=='#gt') fillCats(); saveFilters(); if(DATA) render(); }));
 $('#greset').onclick=()=>{ $('#gp').value=''; $('#gd').value=''; $('#gt').value=''; saveFilters(); if(DATA) render(); };
