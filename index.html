@@ -41,6 +41,11 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .mut{color:var(--mut)}
 .insight{padding:10px 12px;border-left:3px solid var(--green);background:#141a16;border-radius:8px;margin:8px 0;font-size:14px}
 canvas{max-height:280px}
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:14px;position:sticky;top:84px;z-index:4}
+.filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut);min-width:170px;flex:1}
+.filters select{width:100%}
+.filters .ghost{background:transparent;border:1px solid var(--line);color:var(--mut)}
+@media (max-width:640px){.filters{position:static}.filters label{min-width:100%}}
 </style>
 </head>
 <body>
@@ -61,6 +66,31 @@ canvas{max-height:280px}
 </div>
 
 <main id="app" style="display:none">
+  <div class="filters card">
+    <label>Площадка
+      <select id="gp">
+        <option value="">Все площадки</option>
+        <option value="ig">Instagram (оба аккаунта)</option>
+        <option value="ig:imm">Instagram @pabeloglazov</option>
+        <option value="ig:pi">Instagram @pabeloglazov_injury</option>
+        <option value="threads">Threads</option>
+      </select>
+    </label>
+    <label>Тема
+      <select id="gd">
+        <option value="">Все темы</option>
+        <option value="IMM">Иммиграция</option>
+        <option value="PI">Personal Injury</option>
+        <option value="USA">США / общее</option>
+      </select>
+    </label>
+    <label>Рубрика / формат
+      <select id="gt"><option value="">Все</option></select>
+    </label>
+    <button id="greset" class="ghost">Сбросить</button>
+    <span id="gcount" class="mut"></span>
+  </div>
+
   <div class="row kpis" id="kpis"></div>
 
   <h2>Что работает лучше всего</h2>
@@ -86,8 +116,6 @@ canvas{max-height:280px}
   <h2>Вся история</h2>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
     <input id="q" placeholder="Поиск по тексту" style="flex:1;min-width:200px">
-    <select id="fp"><option value="">Все площадки</option><option value="threads">Threads</option><option value="ig">Instagram</option></select>
-    <select id="fd"><option value="">Все темы</option><option>IMM</option><option>PI</option><option>USA</option></select>
   </div>
   <div class="card scroll"><table id="hist"></table></div>
 
@@ -123,8 +151,40 @@ async function load(){
 function avg(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0; }
 function groupBy(recs, fn){ const g={}; recs.forEach(r=>{const k=fn(r)||'—'; (g[k]=g[k]||[]).push(r)}); return g; }
 
+function passPlatform(r, gp){
+  if(!gp) return true;
+  if(gp==='threads') return r.platform==='threads';
+  if(gp==='ig') return r.platform==='ig';
+  if(gp.startsWith('ig:')) return r.platform==='ig' && r.account===gp.slice(3);
+  return true;
+}
+function catOf(r){ return r.platform==='ig' ? (r.tag ? 'tag:'+r.tag : '') : (r.format ? 'fmt:'+r.format : ''); }
+function filtered(){
+  const gp=$('#gp').value, gd=$('#gd').value, gt=$('#gt').value;
+  return DATA.records.filter(r=>passPlatform(r,gp) && (!gd||r.dir===gd) && (!gt||catOf(r)===gt));
+}
+function fillCats(){
+  const gp=$('#gp').value, gd=$('#gd').value, cur=$('#gt').value;
+  const tags={}, fmts={};
+  DATA.records.filter(r=>passPlatform(r,gp)&&(!gd||r.dir===gd)).forEach(r=>{
+    if(r.platform==='ig' && r.tag) tags[r.tag]=(tags[r.tag]||0)+1;
+    if(r.platform==='threads' && r.format) fmts[r.format]=(fmts[r.format]||0)+1;
+  });
+  const opt=(v,l,n)=>`<option value="${esc(v)}">${esc(l)} (${n})</option>`;
+  let h='<option value="">Все</option>';
+  const tk=Object.keys(tags).sort(), fk=Object.keys(fmts).sort();
+  if(tk.length) h+='<optgroup label="Рубрики сторис">'+tk.map(t=>opt('tag:'+t,t,tags[t])).join('')+'</optgroup>';
+  if(fk.length) h+='<optgroup label="Форматы Threads">'+fk.map(f=>opt('fmt:'+f,FORMAT_RU[f]||f,fmts[f])).join('')+'</optgroup>';
+  $('#gt').innerHTML=h;
+  $('#gt').value=[...$('#gt').options].some(o=>o.value===cur)?cur:'';
+}
+function saveFilters(){ store.set('filters',JSON.stringify({gp:$('#gp').value,gd:$('#gd').value,gt:$('#gt').value})); }
+function restoreFilters(){ try{ const f=JSON.parse(store.get('filters')||'{}'); if(f.gp!=null)$('#gp').value=f.gp; if(f.gd!=null)$('#gd').value=f.gd; return f.gt||''; }catch(e){ return ''; } }
+
 function render(){
-  const R = DATA.records.map(r=>({...r, m:r.metrics||{}}));
+  fillCats();
+  const R = filtered().map(r=>({...r, m:r.metrics||{}}));
+  $('#gcount').textContent = `Показано ${R.length} из ${DATA.records.length}`;
   const th = R.filter(r=>r.platform==='threads'), ig = R.filter(r=>r.platform==='ig');
   const measured = R.filter(r=>r.metrics_at);
   const thViews = th.reduce((s,r)=>s+(r.m.views||0),0);
@@ -162,7 +222,9 @@ function render(){
   const ms = measured.slice().sort((a,b)=>b.score-a.score);
   table('#top', ms.slice(0,10)); table('#bottom', ms.slice(-5).reverse());
   renderHist();
-  $('#queue').innerHTML = '<tr><th>#</th><th>Тип</th><th>Тема</th><th>Текст</th></tr>' + (DATA.queue||[]).map((q,i)=>`<tr><td>${i+1}</td><td>${esc(q.kind||'')}</td><td>${q.dir?`<span class="tag ${q.dir}">${q.dir}</span>`:''}</td><td class="txt">${esc(q.text)}</td></tr>`).join('');
+  const gpv=$('#gp').value, gdv=$('#gd').value, gtv=$('#gt').value;
+  const Q = (DATA.queue||[]).map((q,i)=>({...q,n:i+1})).filter(q=>(!gpv||gpv==='threads')&&(!gdv||q.dir===gdv)&&(!gtv||gtv==='fmt:'+q.format));
+  $('#queue').innerHTML = '<tr><th>#</th><th>Тип</th><th>Тема</th><th>Текст</th></tr>' + (Q.length?'':'<tr><td colspan="4" class="mut">Нет постов под этот фильтр</td></tr>') + Q.map((q)=>`<tr><td>${q.n}</td><td>${esc(q.kind||'')}</td><td>${q.dir?`<span class="tag ${q.dir}">${q.dir}</span>`:''}</td><td class="txt">${esc(q.text)}</td></tr>`).join('');
   const il = DATA.insights_last;
   $('#meta').textContent = `Данные: ${fmtDate(DATA.generated)} PT` + (il?` · статистика обновлена ${fmtDate(il.at)} (${il.updated} постов${il.errors&&il.errors.length?', ошибки: '+il.errors.join(' | '):''})`:'');
 }
@@ -188,8 +250,8 @@ function rowHtml(r){
 function table(sel,rows){ $(sel).innerHTML = '<tr>'+COLS.map(c=>`<th>${c[1]}</th>`).join('')+'</tr>' + (rows.length?rows.map(rowHtml).join(''):'<tr><td colspan="10" class="mut">Пока нет данных со статистикой</td></tr>'); }
 function renderHist(){
   if(!DATA) return;
-  const q=$('#q').value.toLowerCase(), fp=$('#fp').value, fd=$('#fd').value;
-  let rows = DATA.records.filter(r=>(!fp||r.platform===fp)&&(!fd||r.dir===fd)&&(!q||((r.title||'')+(r.text||'')+(r.tag||'')).toLowerCase().includes(q)));
+  const q=$('#q').value.toLowerCase();
+  let rows = filtered().filter(r=>(!q||((r.title||'')+(r.text||'')+(r.tag||'')).toLowerCase().includes(q)));
   rows.sort((a,b)=>{ const va=sortKey==='at'?new Date(a.at):(sortKey in a?a[sortKey]:(a.metrics||{})[sortKey]||0); const vb=sortKey==='at'?new Date(b.at):(sortKey in b?b[sortKey]:(b.metrics||{})[sortKey]||0); return (va>vb?1:va<vb?-1:0)*sortDir; });
   $('#hist').innerHTML = '<tr>'+COLS.map(c=>`<th data-k="${c[0]}">${c[1]}${sortKey===c[0]?(sortDir>0?' ▲':' ▼'):''}</th>`).join('')+'</tr>'+rows.map(rowHtml).join('');
   document.querySelectorAll('#hist th').forEach(th=>th.onclick=()=>{ const k=th.dataset.k; sortDir = sortKey===k?-sortDir:-1; sortKey=k; renderHist(); });
@@ -198,7 +260,12 @@ function renderHist(){
 $('#save').onclick=()=>{ store.set('readKey',$('#key').value.trim()); $('#err').textContent=''; load(); };
 $('#key').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#save').click(); });
 $('#reload').onclick=load; $('#days').onchange=load;
-['#q','#fp','#fd'].forEach(s=>$(s).addEventListener('input',renderHist));
+$('#q').addEventListener('input',renderHist);
+const _gt0 = restoreFilters();
+['#gp','#gd','#gt'].forEach(s=>$(s).addEventListener('change',()=>{ if(s!=='#gt') fillCats(); saveFilters(); if(DATA) render(); }));
+$('#greset').onclick=()=>{ $('#gp').value=''; $('#gd').value=''; $('#gt').value=''; saveFilters(); if(DATA) render(); };
+const _render0 = render;
+render = function(){ if(_gt0 && !render._done){ fillCats(); $('#gt').value=[...$('#gt').options].some(o=>o.value===_gt0)?_gt0:''; render._done=true; } _render0(); };
 load();
 </script>
 </body>
