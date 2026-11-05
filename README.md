@@ -1,6 +1,6 @@
 # Autopost — панель и аналитика
 
-Автопостинг новостей Павла Белоглазова: Instagram Stories (@pabeloglazov, @pabeloglazov_injury) и Threads (@pabeloglazov), плюс аналитика охватов.
+Автопостинг новостей Павла Белоглазова: Instagram Stories (@pabeloglazov, @pabeloglazov_injury) и Threads (@pabeloglazov), плюс лейбл ФЬЮЧЕ: Instagram @futurepeoplemusic и Threads ФЬЮЧЕ (токены TOKEN_FUTURE и TOKEN_THREADS_FUTURE, своя очередь Threads, своя аналитика `insights_summary` со `scope: "future"`, темы с `dir: "FUT"`), плюс аналитика охватов.
 
 - `index.html` — панель (GitHub Pages). Данные читает у скрипта Google Apps Script по ключу панели (READ_KEY из Script Properties), сам ключ в коде не хранится.
 - `apps-script/Code.gs` — копия кода скрипта «IG Autopost». Токены и ключи лежат только в Script Properties.

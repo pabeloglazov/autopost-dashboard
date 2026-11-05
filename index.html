@@ -33,7 +33,7 @@ th{color:var(--mut);font-weight:700;font-size:11px;text-transform:uppercase;lett
 td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tag{display:inline-block;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700;background:#26262b;white-space:nowrap}
 .tag.ig{background:#3a1d24;color:#ff8fa3}.tag.threads{background:#1e2a3a;color:#8fbaff}
-.tag.IMM{background:#3a1717;color:#ff8a8a}.tag.PI{background:#163222;color:#7fd6a2}.tag.USA{background:#2f2a14;color:#e8cf6b}
+.tag.IMM{background:#3a1717;color:#ff8a8a}.tag.PI{background:#163222;color:#7fd6a2}.tag.USA{background:#2f2a14;color:#e8cf6b}.tag.FUT{background:#2a1d3d;color:#c4a6ff}
 .txt{max-width:520px}
 .scroll{overflow-x:auto}
 #login{max-width:420px;margin:12vh auto;text-align:center}
@@ -77,10 +77,14 @@ canvas{max-height:280px}
     <label>Площадка
       <select id="gp">
         <option value="">Все площадки</option>
-        <option value="ig">Instagram (оба аккаунта)</option>
+        <option value="ig">Instagram (все аккаунты)</option>
         <option value="ig:imm">Instagram @pabeloglazov</option>
         <option value="ig:pi">Instagram @pabeloglazov_injury</option>
-        <option value="threads">Threads</option>
+        <option value="ig:future">Instagram @futurepeoplemusic</option>
+        <option value="threads">Threads (все)</option>
+        <option value="threads:main">Threads @pabeloglazov</option>
+        <option value="threads:future">Threads ФЬЮЧЕ</option>
+        <option value="fut">ФЬЮЧЕ (Instagram + Threads)</option>
       </select>
     </label>
     <label>Тема
@@ -89,6 +93,7 @@ canvas{max-height:280px}
         <option value="IMM">Иммиграция</option>
         <option value="PI">Personal Injury</option>
         <option value="USA">США / общее</option>
+        <option value="FUT">ФЬЮЧЕ</option>
       </select>
     </label>
     <label>Рубрика / формат
@@ -174,6 +179,9 @@ function groupBy(recs, fn){ const g={}; recs.forEach(r=>{const k=fn(r)||'—'; (
 function passPlatform(r, gp){
   if(!gp) return true;
   if(gp==='threads') return r.platform==='threads';
+  if(gp==='threads:future') return r.platform==='threads' && r.account==='future';
+  if(gp==='threads:main') return r.platform==='threads' && r.account!=='future';
+  if(gp==='fut') return r.account==='future';
   if(gp==='ig') return r.platform==='ig';
   if(gp.startsWith('ig:')) return r.platform==='ig' && r.account===gp.slice(3);
   return true;
@@ -243,8 +251,8 @@ function render(){
   table('#top', ms.slice(0,10)); table('#bottom', ms.slice(-5).reverse());
   renderHist();
   const gpv=$('#gp').value, gdv=$('#gd').value, gtv=$('#gt').value;
-  const Q = (DATA.queue||[]).map((q,i)=>({...q,n:i+1})).filter(q=>(!gpv||gpv==='threads')&&(!gdv||q.dir===gdv)&&(!gtv||gtv==='fmt:'+q.format));
-  $('#queue').innerHTML = '<tr><th>#</th><th>Тип</th><th>Тема</th><th>Текст</th></tr>' + (Q.length?'':'<tr><td colspan="4" class="mut">Нет постов под этот фильтр</td></tr>') + Q.map((q)=>`<tr><td>${q.n}</td><td>${esc(q.kind||'')}</td><td>${q.dir?`<span class="tag ${q.dir}">${q.dir}</span>`:''}</td><td class="txt">${esc(q.text)}</td></tr>`).join('');
+  const Q = (DATA.queue||[]).map((q,i)=>({...q,n:i+1})).filter(q=>(!gpv||gpv==='threads'||(gpv==='threads:future'&&q.account==='future')||(gpv==='fut'&&q.account==='future')||(gpv==='threads:main'&&q.account!=='future'))&&(!gdv||q.dir===gdv)&&(!gtv||gtv==='fmt:'+q.format));
+  $('#queue').innerHTML = '<tr><th>#</th><th>Тип</th><th>Тема</th><th>Текст</th></tr>' + (Q.length?'':'<tr><td colspan="4" class="mut">Нет постов под этот фильтр</td></tr>') + Q.map((q)=>`<tr><td>${q.n}</td><td>${esc((q.account==='future'?'ФЬЮЧЕ · ':'')+(q.kind||''))}</td><td>${q.dir?`<span class="tag ${q.dir}">${q.dir}</span>`:''}</td><td class="txt">${esc(q.text)}</td></tr>`).join('');
   const il = DATA.insights_last;
   $('#meta').textContent = `Данные: ${fmtDate(DATA.generated)} PT` + (il?` · статистика обновлена ${fmtDate(il.at)} (${il.updated} постов${il.errors&&il.errors.length?', ошибки: '+il.errors.join(' | '):''})`:'');
 }
@@ -264,7 +272,7 @@ function bar(id,groups,valFn,labelFn,color,sortByKey){
 const COLS = [['at','Дата'],['platform','Где'],['dir','Тема'],['format','Формат'],['text','Текст'],['views','Просм./охват'],['likes','Лайки'],['replies','Ответы'],['reposts','Репосты'],['score','Оценка']];
 function rowHtml(r){
   const m=r.metrics||{};
-  const where = r.platform==='ig' ? `<span class="tag ig">IG ${r.account==='pi'?'injury':'main'}</span>` : `<span class="tag threads">Threads</span>`;
+  const where = r.platform==='ig' ? `<span class="tag ig">IG ${r.account==='pi'?'injury':r.account==='future'?'ФЬЮЧЕ':'main'}</span>` : `<span class="tag threads">Threads${r.account==='future'?' ФЬЮЧЕ':''}</span>`;
   return `<tr><td class="num">${fmtDate(r.at)}</td><td>${where}</td><td>${r.dir?`<span class="tag ${r.dir}">${r.dir}</span>`:''}</td><td>${esc(FORMAT_RU[r.format]||r.format||r.kind||'')}</td><td class="txt">${esc((r.tag?r.tag+' · ':'')+(r.title||r.text||r.name||''))}</td><td class="num">${fmtNum(r.views)}</td><td class="num">${fmtNum(m.likes)}</td><td class="num">${fmtNum(m.replies)}</td><td class="num">${fmtNum((m.reposts||0)+(m.shares||0))}</td><td class="num"><b>${r.metrics_at?r.score:'—'}</b></td></tr>`;
 }
 function table(sel,rows){ $(sel).innerHTML = '<tr>'+COLS.map(c=>`<th>${c[1]}</th>`).join('')+'</tr>' + (rows.length?rows.map(rowHtml).join(''):'<tr><td colspan="10" class="mut">Пока нет данных со статистикой</td></tr>'); }

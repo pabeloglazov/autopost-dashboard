@@ -1,6 +1,7 @@
 /**
  * Autopost — Павел Белоглазов
- * Instagram Stories (@pabeloglazov = "imm", @pabeloglazov_injury = "pi") + Threads (@pabeloglazov)
+ * Instagram Stories (@pabeloglazov = "imm", @pabeloglazov_injury = "pi", @futurepeoplemusic = "future")
+ * + Threads (@pabeloglazov = "main", Threads ФЬЮЧЕ = "future")
  * + журнал публикаций, сбор статистики и данные для панели/задач.
  *
  * Script Properties (Project Settings → Script properties):
@@ -9,6 +10,8 @@
  *   TOKEN_IMM     — токен Instagram @pabeloglazov
  *   TOKEN_PI      — токен Instagram @pabeloglazov_injury
  *   TOKEN_THREADS — токен Threads @pabeloglazov
+ *   TOKEN_FUTURE  — токен Instagram @futurepeoplemusic (ФЬЮЧЕ)
+ *   TOKEN_THREADS_FUTURE — токен Threads ФЬЮЧЕ
  *   FOLDER_ID     — создаётся автоматически (папка в Google Drive)
  */
 
@@ -36,11 +39,12 @@ function doPost(e) {
     if (!body.key || body.key !== PROPS.getProperty('SECRET')) return out_({ ok: false, error: 'forbidden' });
     if (body.action === 'ping') return out_(ping_(body.account));
     if (body.action === 'story') return out_(publishStory_(body.account, body.image_b64, body.name || 'story', body.meta || {}));
-    if (body.action === 'topics_get') return out_(topicsGet_(body.days || 14));
+    if (body.action === 'threads_ping') return out_(threadsPing_(body.account));
+    if (body.action === 'topics_get') return out_(topicsGet_(body.days || 14, body.dir));
     if (body.action === 'topics_add') return out_(topicsAdd_(body.topics || []));
-    if (body.action === 'threads_queue') return out_(threadsQueue_(body.posts || []));
-    if (body.action === 'threads_status') return out_(threadsStatus_());
-    if (body.action === 'insights_summary') return out_(insightsSummary_(body.days || 14));
+    if (body.action === 'threads_queue') return out_(threadsQueue_(body.posts || [], body.account));
+    if (body.action === 'threads_status') return out_(threadsStatus_(body.account));
+    if (body.action === 'insights_summary') return out_(insightsSummary_(body.days || 14, body.scope));
     if (body.action === 'collect_now') { collectInsights(); return out_({ ok: true, last: JSON.parse(PROPS.getProperty('INSIGHTS_LAST') || 'null') }); }
     if (body.action === 'records_add') {
       (body.records || []).forEach(function (r) { addRecord_(Object.assign({ metrics: {}, metrics_at: null }, r)); });
@@ -95,7 +99,7 @@ function addRecord_(rec) {
 /* ===================== Instagram Stories ===================== */
 
 function token_(account) {
-  const key = account === 'pi' ? 'TOKEN_PI' : account === 'imm' ? 'TOKEN_IMM' : null;
+  const key = account === 'pi' ? 'TOKEN_PI' : account === 'imm' ? 'TOKEN_IMM' : account === 'future' ? 'TOKEN_FUTURE' : null;
   if (!key) throw new Error('unknown account: ' + account);
   const t = PROPS.getProperty(key);
   if (!t) throw new Error(key + ' is not set');
@@ -152,10 +156,14 @@ function api_(method, path, token, payload) {
 
 /* ===================== Журнал тем (защита от повторов) ===================== */
 
-function topicsGet_(days) {
+/** dir не указан — темы Павла (всё, кроме FUT); dir = 'FUT' — только темы ФЬЮЧЕ. */
+function topicsGet_(days, dir) {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
   const all = readJson_('topics_log.json');
-  return { ok: true, topics: all.filter(function (t) { return new Date(t.date).getTime() >= cutoff; }) };
+  return { ok: true, topics: all.filter(function (t) {
+    if (new Date(t.date).getTime() < cutoff) return false;
+    return dir ? t.dir === dir : t.dir !== 'FUT';
+  }) };
 }
 
 function topicsAdd_(items) {
@@ -169,52 +177,79 @@ function topicsAdd_(items) {
 }
 
 /* ===================== Threads: очередь и публикация ===================== */
+// Аккаунты Threads: 'main' (@pabeloglazov, по умолчанию) и 'future' (ФЬЮЧЕ). У каждого своя очередь и свой таймер-интервал.
 
-function threadsQueue_(posts) {
+function thAcc_(account) { return account === 'future' ? 'future' : 'main'; }
+function thQueueFile_(account) { return thAcc_(account) === 'future' ? 'threads_queue_future.json' : 'threads_queue.json'; }
+function thLogFile_(account) { return thAcc_(account) === 'future' ? 'threads_log_future.json' : 'threads_log.json'; }
+function thTokenKey_(account) { return thAcc_(account) === 'future' ? 'TOKEN_THREADS_FUTURE' : 'TOKEN_THREADS'; }
+function thLastKey_(account) { return thAcc_(account) === 'future' ? 'THREADS_FUTURE_LAST_AT' : 'THREADS_LAST_AT'; }
+function thRecAccount_(account) { return thAcc_(account) === 'future' ? 'future' : 'threads'; }
+
+function threadsPing_(account) {
+  const t = PROPS.getProperty(thTokenKey_(account));
+  if (!t) throw new Error(thTokenKey_(account) + ' is not set');
+  const me = threadsApi_('get', '/me?fields=id,username', t);
+  return { ok: true, account: thAcc_(account), username: me.username, id: me.id };
+}
+
+function threadsQueue_(posts, account) {
   return withLock_(function () {
-    const q = readJson_('threads_queue.json');
+    const q = readJson_(thQueueFile_(account));
     posts.forEach(function (p) {
       const o = typeof p === 'string' ? { text: p } : p;
       const text = String(o.text || '').trim().slice(0, 490);
       if (text) q.push({ text: text, kind: o.kind || '', dir: o.dir || '', format: o.format || '', added: new Date().toISOString() });
     });
-    writeJson_('threads_queue.json', q);
-    return { ok: true, queued: posts.length, queue_length: q.length };
+    writeJson_(thQueueFile_(account), q);
+    return { ok: true, account: thAcc_(account), queued: posts.length, queue_length: q.length };
   });
 }
 
-function threadsStatus_() {
-  const q = readJson_('threads_queue.json');
-  const log = readJson_('threads_log.json');
-  return { ok: true, queue_length: q.length, last: log.slice(-5), token_set: !!PROPS.getProperty('TOKEN_THREADS') };
+function threadsStatus_(account) {
+  const q = readJson_(thQueueFile_(account));
+  const log = readJson_(thLogFile_(account));
+  return { ok: true, account: thAcc_(account), queue_length: q.length, last: log.slice(-5), token_set: !!PROPS.getProperty(thTokenKey_(account)) };
 }
 
-/** Таймер (каждые 10 минут): публикует один пост, равномерно распределяя очередь до 22:00 PT. */
+/** Таймер (каждые 10 минут): по одному посту в каждый аккаунт Threads, очередь распределяется равномерно до 22:00 PT. */
 function threadsTick() {
+  ['main', 'future'].forEach(function (a) {
+    try { threadsTickFor_(a); } catch (e) { console.warn('threadsTick ' + a + ': ' + (e.message || e)); }
+  });
+}
+
+// Окно публикации: Павел — 7:00–22:00 по Калифорнии, ФЬЮЧЕ — 9:00–23:00 по Москве (аудитория в России и СНГ).
+function thWindow_(account) {
+  return thAcc_(account) === 'future' ? { tz: 'Europe/Moscow', from: 9, to: 23 } : { tz: 'America/Los_Angeles', from: 7, to: 22 };
+}
+
+function threadsTickFor_(account) {
   const now = new Date();
-  const hour = Number(Utilities.formatDate(now, 'America/Los_Angeles', 'H'));
-  const minute = Number(Utilities.formatDate(now, 'America/Los_Angeles', 'm'));
-  if (hour < 7 || hour >= 22) return;
-  const token = PROPS.getProperty('TOKEN_THREADS');
+  const w = thWindow_(account);
+  const hour = Number(Utilities.formatDate(now, w.tz, 'H'));
+  const minute = Number(Utilities.formatDate(now, w.tz, 'm'));
+  if (hour < w.from || hour >= w.to) return;
+  const token = PROPS.getProperty(thTokenKey_(account));
   if (!token) return;
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return;
   let published = null;
   try {
-    const q = readJson_('threads_queue.json');
+    const q = readJson_(thQueueFile_(account));
     if (!q.length) return;
-    const remaining = 22 * 60 - (hour * 60 + minute);
+    const remaining = w.to * 60 - (hour * 60 + minute);
     const interval = Math.min(30, Math.max(10, remaining / q.length));
-    const last = Number(PROPS.getProperty('THREADS_LAST_AT') || 0);
+    const last = Number(PROPS.getProperty(thLastKey_(account)) || 0);
     if (last && (now.getTime() - last) / 60000 < interval - 1) return;
     const item = q[0];
-    const log = readJson_('threads_log.json');
+    const log = readJson_(thLogFile_(account));
     try {
       const c = threadsApi_('post', '/me/threads', token, { media_type: 'TEXT', text: item.text });
       Utilities.sleep(5000);
       const p = threadsApi_('post', '/me/threads_publish', token, { creation_id: c.id });
       q.shift();
-      PROPS.setProperty('THREADS_LAST_AT', String(Date.now()));
+      PROPS.setProperty(thLastKey_(account), String(Date.now()));
       log.push({ at: new Date().toISOString(), ok: true, id: p.id, text: item.text.slice(0, 80) });
       published = { id: p.id, item: item };
     } catch (err) {
@@ -222,13 +257,13 @@ function threadsTick() {
       if (item.tries >= 3) q.shift();
       log.push({ at: new Date().toISOString(), ok: false, error: String(err.message || err), text: item.text.slice(0, 80) });
     }
-    writeJson_('threads_queue.json', q);
-    writeJson_('threads_log.json', log.slice(-300));
+    writeJson_(thQueueFile_(account), q);
+    writeJson_(thLogFile_(account), log.slice(-300));
   } finally { lock.releaseLock(); }
   if (published) {
     const it = published.item;
     addRecord_({
-      id: published.id, platform: 'threads', account: 'threads', kind: it.kind || 'post',
+      id: published.id, platform: 'threads', account: thRecAccount_(account), kind: it.kind || 'post',
       dir: it.dir || '', format: it.format || '', tag: '', title: '', text: it.text,
       at: new Date().toISOString(), metrics: {}, metrics_at: null
     });
@@ -288,7 +323,7 @@ function igInsights_(rec) {
 }
 
 function threadsInsights_(rec) {
-  const token = PROPS.getProperty('TOKEN_THREADS');
+  const token = PROPS.getProperty(rec.account === 'future' ? 'TOKEN_THREADS_FUTURE' : 'TOKEN_THREADS');
   return metricValues_(threadsApi_('get', '/' + rec.id + '/insights?metric=views,likes,replies,reposts,quotes,shares', token));
 }
 
@@ -333,10 +368,11 @@ function analytics_(days) {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
   const recs = readJson_('analytics.json').filter(function (r) { return new Date(r.at).getTime() >= cutoff; });
   recs.forEach(function (r) { r.score = Math.round(score_(r) * 10) / 10; r.views = views_(r); });
-  const q = readJson_('threads_queue.json');
+  const qm = readJson_('threads_queue.json').map(function (x) { return { account: 'main', text: x.text, kind: x.kind, dir: x.dir, format: x.format }; });
+  const qf = readJson_('threads_queue_future.json').map(function (x) { return { account: 'future', text: x.text, kind: x.kind, dir: x.dir, format: x.format }; });
   return {
     ok: true, generated: new Date().toISOString(), days: days, records: recs,
-    queue: q.map(function (x) { return { text: x.text, kind: x.kind, dir: x.dir, format: x.format }; }),
+    queue: qm.concat(qf),
     insights_last: JSON.parse(PROPS.getProperty('INSIGHTS_LAST') || 'null')
   };
 }
@@ -354,15 +390,19 @@ function group_(recs, key) {
 }
 
 /** Сводка для ежедневных задач: что заходит лучше всего за N дней. */
-function insightsSummary_(days) {
+/** scope не указан — только аккаунты Павла; scope = 'future' — только ФЬЮЧЕ (Instagram и Threads). */
+function insightsSummary_(days, scope) {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
-  const recs = readJson_('analytics.json').filter(function (r) { return new Date(r.at).getTime() >= cutoff && r.metrics_at; });
+  const fut = scope === 'future';
+  const recs = readJson_('analytics.json').filter(function (r) {
+    return new Date(r.at).getTime() >= cutoff && r.metrics_at && ((r.account === 'future') === fut);
+  });
   const th = recs.filter(function (r) { return r.platform === 'threads'; });
   const ig = recs.filter(function (r) { return r.platform === 'ig'; });
   const sortS = function (a, b) { return score_(b) - score_(a); };
   const brief = function (r) { return { text: (r.title || r.text || '').slice(0, 160), tag: r.tag, dir: r.dir, format: r.format, kind: r.kind, account: r.account, score: Math.round(score_(r) * 10) / 10, metrics: r.metrics }; };
   return {
-    ok: true, days: days, measured_posts: recs.length,
+    ok: true, days: days, scope: fut ? 'future' : 'pavel', measured_posts: recs.length,
     threads: { by_format: group_(th, 'format'), by_dir: group_(th, 'dir'), by_kind: group_(th, 'kind'),
       top: th.slice().sort(sortS).slice(0, 10).map(brief), bottom: th.slice().sort(sortS).reverse().slice(0, 5).map(brief) },
     stories: { by_tag: group_(ig, 'tag'), by_dir: group_(ig, 'dir'), by_account: group_(ig, 'account'),
@@ -373,7 +413,7 @@ function insightsSummary_(days) {
 /* ===================== Токены и обслуживание ===================== */
 
 function refreshTokens() {
-  ['TOKEN_IMM', 'TOKEN_PI'].forEach(function (k) {
+  ['TOKEN_IMM', 'TOKEN_PI', 'TOKEN_FUTURE'].forEach(function (k) {
     const t = PROPS.getProperty(k);
     if (!t) return;
     const res = UrlFetchApp.fetch('https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=' + encodeURIComponent(t), { muteHttpExceptions: true });
@@ -384,12 +424,14 @@ function refreshTokens() {
 }
 
 function refreshThreadsToken() {
-  const t = PROPS.getProperty('TOKEN_THREADS');
-  if (!t) return;
-  const res = UrlFetchApp.fetch('https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=' + encodeURIComponent(t), { muteHttpExceptions: true });
-  const d = JSON.parse(res.getContentText() || '{}');
-  if (d.access_token) PROPS.setProperty('TOKEN_THREADS', d.access_token);
-  else console.warn('Threads refresh failed: ' + res.getContentText());
+  ['TOKEN_THREADS', 'TOKEN_THREADS_FUTURE'].forEach(function (k) {
+    const t = PROPS.getProperty(k);
+    if (!t) return;
+    const res = UrlFetchApp.fetch('https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=' + encodeURIComponent(t), { muteHttpExceptions: true });
+    const d = JSON.parse(res.getContentText() || '{}');
+    if (d.access_token) PROPS.setProperty(k, d.access_token);
+    else console.warn(k + ' refresh failed: ' + res.getContentText());
+  });
 }
 
 /** Удаляет картинки старше 7 дней (JSON-файлы не трогает). */
@@ -406,6 +448,7 @@ function setupThreads() {
   const have = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); });
   if (have.indexOf('refreshThreadsToken') < 0) ScriptApp.newTrigger('refreshThreadsToken').timeBased().everyDays(7).atHour(3).create();
   jsonFile_('threads_queue.json'); jsonFile_('threads_log.json');
+  jsonFile_('threads_queue_future.json'); jsonFile_('threads_log_future.json');
 }
 
 /** Запустить один раз после обновления: аналитика (READ_KEY, analytics.json, ежечасный сбор). */
