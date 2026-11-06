@@ -42,6 +42,8 @@ function doPost(e) {
     if (body.action === 'threads_ping') return out_(threadsPing_(body.account));
     if (body.action === 'topics_get') return out_(topicsGet_(body.days || 14, body.dir));
     if (body.action === 'topics_add') return out_(topicsAdd_(body.topics || []));
+    if (body.action === 'lessons_get') return out_(lessonsGet_(body.scope));
+    if (body.action === 'lessons_set') return out_(lessonsSet_(body.scope, body.lessons || []));
     if (body.action === 'threads_queue') return out_(threadsQueue_(body.posts || [], body.account));
     if (body.action === 'threads_status') return out_(threadsStatus_(body.account));
     if (body.action === 'insights_summary') return out_(insightsSummary_(body.days || 14, body.scope));
@@ -156,13 +158,13 @@ function api_(method, path, token, payload) {
 
 /* ===================== Журнал тем (защита от повторов) ===================== */
 
-/** dir не указан — темы Павла (всё, кроме FUT); dir = 'FUT' — только темы ФЬЮЧЕ. */
+/** dir не указан — темы Павла (всё, кроме FUT*); dir = 'FUT' / 'FUTTH' — только темы ФЬЮЧЕ (сторис / Threads). */
 function topicsGet_(days, dir) {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
   const all = readJson_('topics_log.json');
   return { ok: true, topics: all.filter(function (t) {
     if (new Date(t.date).getTime() < cutoff) return false;
-    return dir ? t.dir === dir : t.dir !== 'FUT';
+    return dir ? t.dir === dir : String(t.dir || '').indexOf('FUT') !== 0;
   }) };
 }
 
@@ -173,6 +175,33 @@ function topicsAdd_(items) {
     const merged = all.concat(items).filter(function (t) { return new Date(t.date).getTime() >= keep; });
     writeJson_('topics_log.json', merged);
     return { ok: true, added: items.length, total: merged.length };
+  });
+}
+
+/* ===================== Журнал выводов (чему научились) ===================== */
+// scope: 'future' (ФЬЮЧЕ) или 'pavel'. Урок: {area:'threads'|'stories', rule, evidence, added, updated}.
+// lessons_set заменяет весь список (так задача может и добавлять, и удалять устаревшие выводы), максимум 40.
+
+function lessonsFile_(scope) { return scope === 'future' ? 'lessons_future.json' : 'lessons_pavel.json'; }
+
+function lessonsGet_(scope) {
+  return { ok: true, scope: scope === 'future' ? 'future' : 'pavel', lessons: readJson_(lessonsFile_(scope)) };
+}
+
+function lessonsSet_(scope, lessons) {
+  if (!Array.isArray(lessons)) throw new Error('lessons must be an array');
+  const now = new Date().toISOString();
+  const clean = lessons.slice(0, 40).map(function (l) {
+    return { area: String(l.area || ''), rule: String(l.rule || '').slice(0, 400), evidence: String(l.evidence || '').slice(0, 300),
+      added: l.added || now, updated: now };
+  }).filter(function (l) { return l.rule; });
+  return withLock_(function () {
+    const f = lessonsFile_(scope);
+    const hist = readJson_(f.replace('.json', '_history.json'));
+    hist.push({ at: now, lessons: readJson_(f) });
+    writeJson_(f.replace('.json', '_history.json'), hist.slice(-60));
+    writeJson_(f, clean);
+    return { ok: true, scope: scope === 'future' ? 'future' : 'pavel', count: clean.length };
   });
 }
 
