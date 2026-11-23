@@ -46,6 +46,7 @@ function doPost(e) {
     if (body.action === 'lessons_set') return out_(lessonsSet_(body.scope, body.lessons || []));
     if (body.action === 'threads_queue') return out_(threadsQueue_(body.posts || [], body.account));
     if (body.action === 'threads_status') return out_(threadsStatus_(body.account));
+    if (body.action === 'threads_prune') return out_(threadsPrune_(body.account, body.min_hours, body.max_hours, body.dry_run));
     if (body.action === 'insights_summary') return out_(insightsSummary_(body.days || 14, body.scope));
     if (body.action === 'collect_now') { collectInsights(); return out_({ ok: true, last: JSON.parse(PROPS.getProperty('INSIGHTS_LAST') || 'null') }); }
     if (body.action === 'records_add') {
@@ -302,12 +303,54 @@ function threadsTickFor_(account) {
 function threadsApi_(method, path, token, payload) {
   let url = THREADS_API + path;
   const opts = { method: method, muteHttpExceptions: true };
-  if (method === 'get') url += (path.indexOf('?') >= 0 ? '&' : '?') + 'access_token=' + encodeURIComponent(token);
+  if (method === 'get' || method === 'delete') url += (path.indexOf('?') >= 0 ? '&' : '?') + 'access_token=' + encodeURIComponent(token);
   else opts.payload = Object.assign({}, payload || {}, { access_token: token });
   const res = UrlFetchApp.fetch(url, opts);
   const data = JSON.parse(res.getContentText() || '{}');
   if (res.getResponseCode() >= 400 || data.error) throw new Error('Threads API ' + res.getResponseCode() + ': ' + (data.error ? data.error.message : res.getContentText()));
   return data;
+}
+
+/**
+ * Чистка Threads: удаляет опубликованные посты без единого ответа (комментария).
+ * Берёт посты аккаунта возрастом от min_hours (по умолчанию 20) до max_hours (по умолчанию 72) часов,
+ * перед удалением заново читает replies из API. dry_run = true — только список, без удаления.
+ * Запись в analytics.json остаётся (с пометкой deleted_at), чтобы статистика и журнал выводов учились и на удалённых.
+ * Нужен scope threads_delete у токена.
+ */
+function threadsPrune_(account, minHours, maxHours, dryRun) {
+  const acc = thAcc_(account);
+  const recAcc = thRecAccount_(acc);
+  const token = PROPS.getProperty(thTokenKey_(acc));
+  if (!token) throw new Error(thTokenKey_(acc) + ' is not set');
+  const minH = Number(minHours) > 0 ? Number(minHours) : 20;
+  const maxH = Number(maxHours) > 0 ? Number(maxHours) : 72;
+  const now = Date.now();
+  const cands = readJson_('analytics.json').filter(function (r) {
+    if (r.platform !== 'threads' || r.account !== recAcc || r.deleted_at) return false;
+    const age = (now - new Date(r.at).getTime()) / 3600000;
+    return age >= minH && age <= maxH;
+  });
+  const deleted = [], kept = [], errors = [];
+  cands.forEach(function (r) {
+    let m = r.metrics || {};
+    try { m = Object.assign({}, m, threadsInsights_(r)); } catch (e) { errors.push({ id: r.id, error: String(e.message || e).slice(0, 160) }); return; }
+    const short = { id: r.id, kind: r.kind, text: String(r.text || '').slice(0, 100), views: m.views || 0, replies: m.replies || 0 };
+    if ((m.replies || 0) > 0) { kept.push(short); return; }
+    if (dryRun) { deleted.push(short); return; }
+    try { threadsApi_('delete', '/' + r.id, token); r.deleted_at = new Date().toISOString(); r.metrics = m; r.metrics_at = r.deleted_at; deleted.push(short); }
+    catch (e) { errors.push({ id: r.id, error: String(e.message || e).slice(0, 160) }); }
+  });
+  if (!dryRun && deleted.length) {
+    const byId = {};
+    cands.forEach(function (r) { if (r.deleted_at) byId[r.id] = r; });
+    withLock_(function () {
+      const cur = readJson_('analytics.json');
+      cur.forEach(function (r) { const d = byId[r.id]; if (d && r.account === recAcc) { r.deleted_at = d.deleted_at; r.metrics = d.metrics; r.metrics_at = d.metrics_at; } });
+      writeJson_('analytics.json', cur);
+    });
+  }
+  return { ok: true, account: acc, dry_run: !!dryRun, checked: cands.length, deleted: deleted, kept: kept.length, errors: errors };
 }
 
 /* ===================== Threads: профиль и поиск трендов ===================== */
@@ -365,7 +408,7 @@ function collectInsights() {
   all.forEach(function (r) {
     const age = (now - new Date(r.at).getTime()) / 3600000;
     const fresh = r.platform === 'ig' ? age <= 24 : age <= 24 * 7;
-    if (!fresh) return;
+    if (!fresh || r.deleted_at) return;
     if (r.metrics_at && (now - new Date(r.metrics_at).getTime()) < 50 * 60000) return;
     try {
       const m = r.platform === 'ig' ? igInsights_(r) : threadsInsights_(r);
