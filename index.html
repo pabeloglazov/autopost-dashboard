@@ -149,6 +149,7 @@ footer{font-size:12px;color:var(--mut)}
 </head>
 <body>
 
+<div id="boot" style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;color:var(--mut);font-size:14px"><div class="brand"><div class="logo">A</div><div><b style="color:var(--ink)">AUTOPOST</b><span>панель Павла</span></div></div><span>Загружаю данные…</span></div>
 <div id="login" class="card login" style="display:none">
   <div class="brand"><div class="logo">A</div><div><b>AUTOPOST</b><span>панель автопостинга</span></div></div>
   <h2 style="margin-top:8px">Вход в панель</h2>
@@ -311,17 +312,20 @@ async function post(body){
 }
 async function load(){
   if(!store.get('readKey')){ showLogin(); return; }
-  $('#reload').style.opacity='.5';
+  $('#reload').style.opacity='.5'; $('#reload').setAttribute('aria-busy','true');
+  if(DATA) $('#subtitle').textContent = 'Обновляю данные…';
   try{
     const [a, x] = await Promise.all([ post({action:'analytics',days:DAYS}), post({action:'dash_extra',days:DAYS}).catch(()=>null) ]);
     if(!a.ok){ store.del('readKey'); $('#err').textContent='Неверный ключ'; showLogin(); return; }
     DATA = a; EXTRA = (x && x.ok) ? x : null;
-    $('#login').style.display='none'; $('#app').style.display='flex';
-    render();
-  }catch(e){ alert('Ошибка загрузки: '+e.message); }
-  finally{ $('#reload').style.opacity='1'; }
+    try{ store.set('cache', JSON.stringify({a:DATA, x:EXTRA, days:DAYS})); }catch(e){ store.del('cache'); }
+    showApp(); render();
+  }catch(e){ if(DATA){ $('#subtitle').textContent = 'Нет связи со скриптом, показаны последние сохранённые данные'; } else { $('#boot').innerHTML = '<span class="alert">Ошибка загрузки: '+esc(e.message)+'. Обновите страницу.</span>'; } }
+  finally{ $('#reload').style.opacity='1'; $('#reload').removeAttribute('aria-busy'); }
 }
-function showLogin(){ $('#login').style.display='flex'; $('#app').style.display='none'; }
+function showLogin(){ $('#boot').style.display='none'; $('#login').style.display='flex'; $('#app').style.display='none'; }
+function showApp(){ $('#boot').style.display='none'; $('#login').style.display='none'; $('#app').style.display='flex'; }
+function loadCache(){ if(!store.get('readKey')) return; try{ const c = JSON.parse(store.get('cache')||'null'); if(c && c.a && c.a.ok && c.days===DAYS){ DATA=c.a; EXTRA=c.x; showApp(); render(); $('#subtitle').textContent = 'Обновляю данные…'; } }catch(e){} }
 
 /* ---------- render ---------- */
 function render(){
@@ -587,7 +591,7 @@ document.querySelectorAll('#period button').forEach(b => b.onclick = () => { DAY
 $('#q').addEventListener('input', renderHist); $('#fPlat').onchange = renderHist; $('#fDel').onchange = renderHist;
 $('#tgo').onclick = () => tsearch(); $('#tq').addEventListener('keydown', e => { if(e.key==='Enter') tsearch(); });
 document.querySelector('a[href="#trends"]').addEventListener('click', loadProfile);
-load(); setTimeout(loadProfile, 1500);
+loadCache(); load(); setTimeout(loadProfile, 1500);
 </script>
 </body>
 </html>
